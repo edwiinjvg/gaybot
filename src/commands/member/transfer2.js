@@ -1,0 +1,106 @@
+/**
+ * @author Edwin
+ * @description Transfiere diamantes a otro usuario, con una comisión.
+ */
+const fs = require('fs');
+const path = require('path');
+const { getPrefix } = require("../../utils/database");
+const { addXP, getUser } = require("../../utils/levelSystem.js");
+const { isRegistered } = require("../../utils/auth.js");
+
+const USERS_DB_PATH = path.join(BASE_DIR, '..', 'database', 'users.json');
+
+// Función para obtener los datos de los usuarios
+const getUsersData = () => {
+  if (!fs.existsSync(USERS_DB_PATH)) {
+    fs.writeFileSync(USERS_DB_PATH, JSON.stringify({}, null, 2));
+  }
+  const data = fs.readFileSync(USERS_DB_PATH, 'utf-8');
+  return JSON.parse(data);
+};
+
+// Función para guardar los datos de los usuarios
+const saveUsersData = (data) => {
+  fs.writeFileSync(USERS_DB_PATH, JSON.stringify(data, null, 2));
+};
+
+module.exports = {
+  name: "trans2",
+  description: "Transfiere diamantes a otro usuario.",
+  commands: ["transfer2", "transferir2", "trans2"],
+  usage: "<prefix>trans2 <cantidad> [@usuario]",
+  /**
+   * @param {CommandHandleProps} props
+   * @returns {Promise<void>}
+   */
+  handle: async ({ sendReply, fullMessage, userJid, mentionedJidList, webMessage }) => {
+    const users = getUsersData();
+
+    // --- NUEVO: VERIFICACIÓN DE REGISTRO ---
+    if (!isRegistered(users, userJid, sendReply)) {
+        return;
+    }
+    
+    const senderData = getUser(users, userJid);
+
+    const args = fullMessage.split(' ');
+    let cantidad = Number(args[1]);
+
+    if (isNaN(cantidad) || cantidad <= 0) {
+      return sendReply(`_Ingresa una cantidad válida para transferir._`);
+    }
+
+    const MIN_TRANSFER = 25;
+    if (cantidad < MIN_TRANSFER) {
+      return sendReply(`_La cantidad mínima para transferir es de *${MIN_TRANSFER}* diamantes._`);
+    }
+
+    let targetUserJid;
+    if (mentionedJidList && mentionedJidList.length > 0) {
+      targetUserJid = mentionedJidList[0];
+    } else if (webMessage.message?.extendedTextMessage?.contextInfo?.participant) {
+      targetUserJid = webMessage.message.extendedTextMessage.contextInfo.participant;
+    } else {
+      return sendReply("_Menciona a un usuario o responde a su mensaje para transferirle._");
+    }
+
+    if (targetUserJid === userJid) {
+      return sendReply("_No puedes transferirte diamantes a ti mismo._");
+    }
+    
+    // --- USANDO BIGINT PARA CÁLCULOS EXACTOS ---
+    const cantidadBig = BigInt(cantidad);
+    const comision = cantidadBig / 7n;
+    const totalDescontar = cantidadBig + comision;
+    const montoRecibido = cantidadBig;
+
+    const senderDiamonds = BigInt(senderData.diamonds || 0);
+
+    if (senderDiamonds < totalDescontar) {
+      return sendReply(`_No tienes suficientes diamantes. Necesitas *${totalDescontar}* (incluyendo la comisión de *${comision}*)._\n_Tu saldo actual es de: *${senderDiamonds}* diamantes._`);
+    }
+
+    const targetUserData = getUser(users, targetUserJid);
+    const targetDiamonds = BigInt(targetUserData.diamonds || 0);
+    
+    // Realizamos la transferencia
+    senderData.diamonds = (senderDiamonds - totalDescontar).toString();
+    targetUserData.diamonds = (targetDiamonds + montoRecibido).toString();
+    
+    saveUsersData(users);
+
+    await addXP(users, userJid, sendReply);
+
+    const replyMessage = `
+- _¡Transferencia exitosa!_ ✅
+- _*Enviaste:* *${montoRecibido}* diamantes._ 💎
+- _*Comisión del bot:* *${comision}* diamantes._ 🤖
+- _*Saldo de:* *@${userJid.split('@')[0]}*: *${senderData.diamonds}* diamantes._ 💎
+- _*Saldo de:* *@${targetUserJid.split('@')[0]}*: *${targetUserData.diamonds}* diamantes._ 💎`;
+
+    await sendReply(replyMessage, {
+        mentions: [userJid, targetUserJid]
+    });
+  },
+};
+
